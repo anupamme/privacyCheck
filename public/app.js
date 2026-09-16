@@ -460,28 +460,41 @@ function loadClientInfo() {
   /* ---- Browser version / up-to-date check ---- */
   {
     const bv = detectBrowserVersion();
-    const latest = LATEST_STABLE[bv.name];
-    const b = [
+    // Render immediately with placeholders, then fill in once the live
+    // latest-version table arrives — same pattern as the UA-CH rows above.
+    const latestRow = row("Latest stable", "…");
+    const statusRow = row("Status", "…", "dim");
+    const note = el("p", { class: "note" }, "Checking against the current stable releases…");
+    const c = card("Browser up to date?", "🆙", "client", [
       row("Browser", bv.name),
       row("Your version", bv.major != null ? "v" + bv.major : "unknown"),
-      row("Latest known", latest != null ? "v" + latest + " (ref.)" : "unknown"),
-    ];
-    if (bv.major != null && latest != null) {
-      const behind = latest - bv.major;
-      // Safari bumps majors slowly, so be stricter there.
-      const strict = bv.name === "Safari";
-      let verdict, cls;
-      if (behind <= 0) { verdict = "✓ up to date"; cls = "good"; }
-      else if (behind <= (strict ? 0 : 2)) { verdict = `slightly behind (${behind} version${behind > 1 ? "s" : ""})`; cls = "warn"; }
-      else { verdict = `⚠ outdated — ${behind} versions behind`; cls = "bad"; }
-      b.push(el("div", { class: "row" },
-        el("span", { class: "k" }, "Status"),
-        el("span", { class: `v ${cls}` }, verdict)));
-    } else {
-      b.push(row("Status", "can't determine version", "dim"));
-    }
-    b.push(el("p", { class: "note" }, "Heuristic: your version is parsed from the User-Agent / Client Hints and compared to reference latest-stable versions (September 2026). An outdated browser is a real security risk."));
-    add(card("Browser up to date?", "🆙", "client", b).card);
+      latestRow, statusRow, note,
+    ]);
+    add(c.card);
+
+    latestVersions.then(({ latest: table, updated, live }) => {
+      const latest = table[bv.name];
+      const setValue = (r, text, cls) => {
+        const v = r.querySelector(".v");
+        v.textContent = text;
+        v.className = "v " + (cls || "");
+      };
+      setValue(latestRow, latest != null ? "v" + latest : "unknown", latest == null ? "dim" : "");
+      if (bv.major != null && latest != null) {
+        const behind = latest - bv.major;
+        // Safari bumps majors slowly, so be stricter there.
+        const strict = bv.name === "Safari";
+        if (behind <= 0) setValue(statusRow, "✓ up to date", "good");
+        else if (behind <= (strict ? 0 : 2)) setValue(statusRow, `slightly behind (${behind} version${behind > 1 ? "s" : ""})`, "warn");
+        else setValue(statusRow, `⚠ outdated — ${behind} versions behind`, "bad");
+      } else {
+        setValue(statusRow, "can't determine version", "dim");
+      }
+      note.textContent =
+        "Your version is parsed from the User-Agent / Client Hints and compared to the latest stable release" +
+        (live ? ` (vendor release feeds, as of ${updated}).` : ` (offline fallback table, as of ${updated}).`) +
+        " An outdated browser is a real security risk.";
+    });
   }
 
   /* ---- Screen & display ---- */
@@ -856,9 +869,21 @@ function loadClientInfo() {
 /* =========================================================================
  *  low-level recon utilities
  * ========================================================================= */
-// Reference latest *stable major* versions (approx, September 2026). Browsers
-// release fast, so this is a heuristic — update the numbers to stay accurate.
-const LATEST_STABLE = { Chrome: 152, Edge: 152, Opera: 135, Firefox: 155, Safari: 26 };
+// Fallback reference for the latest *stable major* versions, used only when
+// /api/browser-versions is unreachable (page opened without the backend). The
+// live numbers come from the vendors' release feeds — see lib/browser-versions.mjs.
+const LATEST_STABLE = { Chrome: 153, Edge: 153, Opera: 135, Firefox: 156, Safari: 27 };
+const LATEST_STABLE_AS_OF = "2026-09-16";
+
+// Kicked off at load so the card can patch itself in as soon as it lands.
+const latestVersions = fetch("/api/browser-versions", { cache: "no-store" })
+  .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+  .then((j) => ({
+    latest: j.latest && Object.keys(j.latest).length ? j.latest : LATEST_STABLE,
+    updated: j.updated || LATEST_STABLE_AS_OF,
+    live: !!(j.latest && Object.keys(j.latest).length),
+  }))
+  .catch(() => ({ latest: LATEST_STABLE, updated: LATEST_STABLE_AS_OF, live: false }));
 
 function detectBrowserVersion() {
   const ua = navigator.userAgent;

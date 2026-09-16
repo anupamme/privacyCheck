@@ -1,0 +1,46 @@
+# Keeps public/browser-versions.json — the offline baseline for the
+# "Browser up to date?" card — in sync with the vendors' release feeds.
+#
+# A running server also refreshes these numbers in memory every 12h, so this
+# workflow exists so that a *fresh* deployment (or one with
+# BROWSER_VERSIONS_REFRESH=false, or no outbound network) still starts from
+# recent data.
+name: update browser versions
+
+on:
+  schedule:
+    - cron: "17 5 * * *" # daily, off the hour so we're not in the rush
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-browser-versions
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # No dependencies — the script is plain Node + global fetch.
+      - name: Fetch latest stable versions
+        run: node tools/update-browser-versions.mjs
+
+      - name: Commit if anything moved
+        run: |
+          if git diff --quiet -- public/browser-versions.json; then
+            echo "no version change"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/browser-versions.json
+          git commit -m "chore: refresh latest stable browser versions"
+          git push

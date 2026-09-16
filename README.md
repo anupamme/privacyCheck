@@ -44,7 +44,8 @@ Source: <https://github.com/sglogger/privacyCheck>
 ### In-browser (JavaScript, sent silently to the server)
 
 - Browser, OS, vendor, platform, CPU cores, device memory, touch points, high-entropy UA-CH
-- **Browser up-to-date check** — parsed version vs. reference latest-stable versions
+- **Browser up-to-date check** — parsed version vs. the *live* latest-stable
+  releases, pulled from the vendors' own feeds (see below)
 - Screen / display: resolution, available area, window size, DPR, color depth, color scheme, reduced-motion, HDR
 - Time & locale: timezone, offset, locale, calendar, numbering system
 - Privacy signals: Do-Not-Track, Global Privacy Control, storage availability, storage quota
@@ -170,6 +171,58 @@ npm start   # http://localhost:3000
 | `TRACEROUTE_HIDE_RANGES` | `193.239.20.0/22` | Comma-separated CIDRs to also mask (e.g. your ISP edge) |
 | `PROBE_RATE_MAX` | `10` | Max active probes (traceroute/nmap/portscan) per IP per window |
 | `PROBE_RATE_WINDOW_MS` | `60000` | Rate-limit window in ms for the active probes |
+| `BROWSER_VERSIONS_REFRESH` | `true` | Re-fetch the latest stable browser versions from the vendors' release feeds at runtime; `false` pins the card to the committed snapshot |
+| `BROWSER_VERSIONS_TTL_HOURS` | `12` | How often that refresh may run |
+
+---
+
+## Keeping the browser version check current
+
+The **"Browser up to date?"** card compares your parsed browser major against
+the current stable release. Those numbers used to be hardcoded and went stale
+within weeks, so they are now pulled from each vendor's own release feed:
+
+| Browser | Source |
+| --- | --- |
+| Chrome | `chromiumdash.appspot.com/fetch_releases` (Chromium release dashboard) |
+| Edge | `edgeupdates.microsoft.com/api/products` (Edge update API) |
+| Firefox | `product-details.mozilla.org/1.0/firefox_versions.json` |
+| Opera | `blogs.opera.com/desktop/feed/` — the "Opera N Stable update" posts |
+| Safari | `developer.apple.com/.../safari-release-notes.json` — Apple's release notes |
+
+There is no single API that covers all five, so each has its own small fetcher
+in [`lib/browser-versions.mjs`](lib/browser-versions.mjs). They run in parallel
+and fail independently: if a vendor changes their feed, that browser keeps its
+last known value instead of vanishing from the card.
+
+Chrome is a special case. A new major rolls out gradually, so for a week or two
+two majors are both "Stable" — the new one with a single early-rollout build,
+the old one still getting patches. Calling that lone build "latest" would flag
+the entire install base as one version behind, so a major must have shipped at
+least two stable builds before it counts as current.
+
+Two layers keep it fresh, so you can rely on either:
+
+1. **At runtime** — the server re-fetches every `BROWSER_VERSIONS_TTL_HOURS`
+   (default 12) and serves the result from `/api/browser-versions`. It is
+   in-memory only; nothing is written back to `public/`, so a read-only
+   filesystem is fine. Stale data is served immediately while the refresh runs
+   in the background, so no visitor ever waits on it.
+2. **In git** — the scheduled workflow
+   [`.github/workflows/update-browser-versions.yml`](.github/workflows/update-browser-versions.yml)
+   runs daily and commits `public/browser-versions.json` when a number moves.
+   That snapshot is the baseline a fresh container starts from, and the only
+   source used when the server has no outbound network or
+   `BROWSER_VERSIONS_REFRESH=false`.
+
+Run it manually with:
+
+```bash
+npm run update-browser-versions
+```
+
+If the page is opened without the backend at all, `app.js` falls back to a
+small hardcoded table and labels the card accordingly.
 
 ---
 
@@ -265,11 +318,14 @@ with the address and reverse-DNS stripped.
 
 ```text
 server.js                     Express server, all APIs, per-visitor report writer
+lib/browser-versions.mjs      Latest-stable browser lookup (vendor release feeds)
+public/browser-versions.json  Offline baseline for the up-to-date check
 public/index.html             Page shell + adblock bait + report-notice placeholder
 public/style.css              Dark "recon dashboard" styling
 public/app.js                 Client-side recon, rendering, silent data collection
 public/ads/advertisement.js   Adblock bait script
 tools/logstats.py             Log analysis helper
+tools/update-browser-versions.mjs  Refreshes the committed version snapshot
 Dockerfile
 docker-compose.yml            Active config (gitignored)
 docker-compose.yml-example    Template — copy to docker-compose.yml and adjust
@@ -290,4 +346,5 @@ docker-compose.yml-example    Template — copy to docker-compose.yml and adjust
 | `GET /api/clientmeta?pubip=` | Beacon: logs the browser-reported public IP |
 | `POST /api/clientreport` | Receives full client fingerprint payload; writes per-visitor JSON + HTML report |
 | `GET /reports/:uuid` | Serves the per-visitor HTML report (requires `LOG_FILE` or `REPORT_DIR`) |
+| `GET /api/browser-versions` | Latest stable browser majors for the up-to-date check |
 | `GET /api/healthz` | Health check |

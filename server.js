@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchLatestBrowserVersions } from "./lib/browser-versions.mjs";
 
 // execFile (no shell) so a spoofed X-Forwarded-For can never inject commands.
 const execFileAsync = promisify(execFile);
@@ -331,6 +332,63 @@ async function torCheck(ip) {
     listUpdated: new Date(cache.fetchedAt).toISOString(),
     stale: !!cache.error,
   };
+}
+
+// Latest-stable browser versions for the "Browser up to date?" card. The
+// committed snapshot in public/ is the offline baseline (refreshed in git by
+// the scheduled GitHub Action); here we re-fetch it from the vendors' release
+// feeds so a long-running deployment stays accurate without a rebuild. Purely
+// in-memory — we never write back to public/, so a read-only FS is fine.
+// Set BROWSER_VERSIONS_REFRESH=false to stay on the shipped snapshot.
+const BROWSER_VERSIONS_FILE = path.join(__dirname, "public", "browser-versions.json");
+const BROWSER_VERSIONS_REFRESH = process.env.BROWSER_VERSIONS_REFRESH !== "false";
+const BROWSER_VERSIONS_TTL_MS =
+  Math.max(1, Number(process.env.BROWSER_VERSIONS_TTL_HOURS) || 12) * 60 * 60 * 1000;
+
+let browserVersions = (() => {
+  try {
+    const snap = JSON.parse(fs.readFileSync(BROWSER_VERSIONS_FILE, "utf8"));
+    return { latest: snap.latest || {}, full: snap.full || {}, updated: snap.updated || null, fetchedAt: 0, error: null };
+  } catch (err) {
+    return { latest: {}, full: {}, updated: null, fetchedAt: 0, error: String(err?.message || err) };
+  }
+})();
+let browserVersionsInflight = null;
+
+function refreshBrowserVersions() {
+  // Collapse concurrent callers onto one round of upstream requests.
+  if (browserVersionsInflight) return browserVersionsInflight;
+  browserVersionsInflight = fetchLatestBrowserVersions()
+    .then(({ latest, full, errors }) => {
+      const failed = Object.keys(errors);
+      if (Object.keys(latest).length) {
+        // Merge, don't replace: a browser whose source is down keeps the value
+        // we already had rather than disappearing from the card.
+        browserVersions = {
+          latest: { ...browserVersions.latest, ...latest },
+          full: { ...browserVersions.full, ...full },
+          updated: new Date().toISOString().slice(0, 10),
+          fetchedAt: Date.now(),
+          error: failed.length ? `stale: ${failed.join(", ")}` : null,
+        };
+      } else {
+        // Total failure: keep the snapshot, but back off a full TTL before retrying.
+        browserVersions = { ...browserVersions, fetchedAt: Date.now(), error: `lookup failed: ${Object.values(errors)[0]}` };
+      }
+      return browserVersions;
+    })
+    .finally(() => { browserVersionsInflight = null; });
+  return browserVersionsInflight;
+}
+
+async function getBrowserVersions() {
+  const stale = Date.now() - browserVersions.fetchedAt >= BROWSER_VERSIONS_TTL_MS;
+  if (!BROWSER_VERSIONS_REFRESH || !stale) return browserVersions;
+  // Serve what we have and refresh behind the visitor's back — the shipped
+  // snapshot is never so old that it's worth blocking the page render for.
+  const refresh = refreshBrowserVersions();
+  if (!Object.keys(browserVersions.latest).length) return refresh;
+  return browserVersions;
 }
 
 // The server's own public IP, cached. Used as the probe target when the request
@@ -1367,6 +1425,14 @@ app.get("/reports/:id", (req, res) => {
   });
 });
 
+// Latest stable browser majors, so the client can flag an outdated browser
+// against live data instead of numbers frozen at build time.
+app.get("/api/browser-versions", async (_req, res) => {
+  const v = await getBrowserVersions();
+  res.set("Cache-Control", "public, max-age=3600");
+  res.json({ updated: v.updated, latest: v.latest, full: v.full, stale: v.error || undefined });
+});
+
 app.get("/api/healthz", (_req, res) => res.json({ ok: true }));
 
 // Delete per-visitor report files whose first visit is older than 30 minutes.
@@ -1413,4 +1479,16 @@ app.listen(PORT, () => {
   getTorExitSet().then((c) =>
     console.log(c.set ? `Tor exit list loaded: ${c.set.size} nodes` : `Tor exit list unavailable: ${c.error}`)
   );
+  // Same for the browser version table (falls back to the committed snapshot).
+  if (BROWSER_VERSIONS_REFRESH) {
+    refreshBrowserVersions().then((v) =>
+      console.log(
+        `browser versions (${v.updated || "snapshot"}): ` +
+        Object.entries(v.latest).map(([n, m]) => `${n} ${m}`).join(", ") +
+        (v.error ? ` — ${v.error}` : "")
+      )
+    );
+  } else {
+    console.log(`browser versions: refresh disabled, using snapshot from ${browserVersions.updated || "?"}`);
+  }
 });
