@@ -1170,6 +1170,13 @@ app.get("/api/dns", async (req, res) => {
     return res.json({ available: false, reason: "invalid or missing hostname" });
   }
   const records = await dnsRecords(host);
+  // Block responses that resolve to a private/internal/link-local address (e.g.
+  // cloud metadata endpoints or DNS-rebinding targets) — format validation alone
+  // isn't enough since isValidHostname doesn't know what the name resolves to.
+  const resolvedIps = [...(records?.A || []), ...(records?.AAAA || [])].filter(isValidIp);
+  if (resolvedIps.some(isPrivateOrLocal)) {
+    return res.json({ available: false, reason: "hostname resolves to a private/internal address" });
+  }
   res.json({ available: true, host, records });
 });
 
