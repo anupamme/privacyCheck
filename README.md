@@ -290,8 +290,10 @@ with the address and reverse-DNS stripped.
   with **`net.isIP()`** (the kernel parser — not a hand-rolled regex), and any
   value starting with `-` is rejected so a token can never be read as an nmap /
   traceroute flag (argument injection). Hostnames for DNS lookups pass a hostname
-  validator. External commands run via `execFile` (no shell). The DOM is built
-  without any `innerHTML` sink.
+  validator that also rejects IP literals and reserved suffixes (`.local`,
+  `.localhost`, `.internal`), so the endpoint can't enumerate names on a
+  split-horizon resolver. External commands run via `execFile` (no shell). The
+  DOM is built without any `innerHTML` sink.
 - The `clientreport` payload is validated and size-limited (16 KB). Only
   whitelisted field shapes are stored; unknown keys are discarded.
 - The active probes are **rate-limited per IP** (`PROBE_RATE_MAX` per
@@ -301,6 +303,12 @@ with the address and reverse-DNS stripped.
   (`setcap cap_net_raw`); `nmap` is allowed via a narrow passwordless `sudo` rule
   that lets `node` run **only** `/usr/bin/nmap`. Everything degrades gracefully
   if raw sockets aren't available.
+- Thanks to [Anupam Mediratta](https://github.com/anupamme) for reporting
+  ([#2](https://github.com/sglogger/privacyCheck/issues/2)) that `/api/dns`
+  would resolve internal hostnames such as `metadata.google.internal`. On
+  review this is not the HIGH-severity SSRF the report described — the endpoint
+  only returns DNS records and never connects to the resolved address — but
+  the hostname validator was tightened as defense in depth (see above).
 
 ---
 

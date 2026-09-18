@@ -237,12 +237,11 @@ async function reverseDns(ip) {
 // Validate a hostname before it is handed to the resolver — keeps this from
 // becoming an open DNS-lookup proxy for arbitrary attacker-supplied strings.
 function isValidHostname(h) {
-  return (
-    typeof h === "string" &&
-    h.length > 0 &&
-    h.length <= 253 &&
-    /^(?=.{1,253}$)([a-z0-9_-]{1,63})(\.[a-z0-9_-]{1,63})+\.?$/i.test(h)
-  );
+  if (typeof h !== "string" || h.length === 0 || h.length > 253) return false;
+  // Reject IP literals and reserved suffixes (.local/.localhost/.internal): never
+  // a public visitor's PTR name, and the only way to enumerate a split-horizon resolver.
+  if (net.isIP(h) || /\.(local|localhost|internal)$/i.test(h)) return false;
+  return /^(?=.{1,253}$)([a-z0-9_-]{1,63})(\.[a-z0-9_-]{1,63})+\.?$/i.test(h);
 }
 
 // Forward DNS records for a hostname (only A/AAAA/CNAME/MX/NS/TXT/SOA).
